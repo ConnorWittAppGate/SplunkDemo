@@ -1,0 +1,130 @@
+# =============================================================================
+# AppGate Controller API poller -- SPLUNK target
+#
+# *** NOT USED. The Collective Health dashboard is LogForwarder-only. ***
+#
+# Retained as a ready-to-go upgrade path. See "What the poller would add" in
+# README.md for the panels this unlocks -- appliance CPU/disk/RAM gauges, site
+# health, live concurrent-session count, and (the interesting one) policy names
+# plus entitlement assignment, which enables an assigned-vs-actually-used
+# least-privilege panel. None of that is derivable from the audit stream.
+#
+# To use it: fill in the four values below, run it, then re-add the poller-fed
+# panels. The macros (appgate_api, appgate_latest_snapshot,
+# appgate_latest_catalog) and the [appgate:api] props stanza are already
+# shipped in TA-appgate-demo.
+#
+# Derived from 02-source/appgate-api-poller/config.yaml in the CrowdStrike
+# integration repo. NO CODE CHANGES ARE NEEDED: siem_shipper.py already emits
+# Splunk HEC format ("Authorization: Splunk <token>" to /services/collector).
+# Only the destination and credentials differ.
+#
+# Copy the poller source next to this file:
+#   02-source/appgate-api-poller/{src,requirements.txt}  ->  poller/
+# then run:  python src/main.py
+# =============================================================================
+
+# --- AppGate controller ------------------------------------------------------
+# Admin API base URL including port (8443 unless you changed it).
+base_url: "https://your-appgate-controller:8443"
+
+# API-only account created in the AppGate admin console under Local Users.
+# Needs read access to the admin API; it never writes.
+appgate_username: "your-api-username"
+
+# Any stable UUID identifying this poller instance to the controller.
+device_id: "00000000-0000-0000-0000-000000000000"
+
+provider: "local"
+
+# Peer API version. 23 = AppGate 6.7.x (the verified baseline). The poller
+# probes /admin/version and fails loudly on a mismatch rather than misbehaving.
+api_version: 23
+
+# --- Splunk HEC destination --------------------------------------------------
+# Your Splunk HEC collector endpoint. Note the /services/collector path.
+#   Splunk Cloud : https://http-inputs-<stack>.splunkcloud.com/services/collector
+#   Splunk Ent   : https://<indexer-or-hf>:8088/services/collector
+#
+# The HEC TOKEN must be configured with:
+#   index      = appgate
+#   sourcetype = appgate:api
+# because siem_shipper.py sends no index/sourcetype/host in the payload --
+# all three come from the token's defaults.
+siem_url: "https://your-splunk-host:8088/services/collector"
+
+# --- Secrets: leave EMPTY here -----------------------------------------------
+# Supply via environment variables instead:
+#   $env:APPGATE_PASSWORD = "..."
+#   $env:SIEM_TOKEN       = "..."
+appgate_password: ""
+siem_token: ""
+
+# --- Poll cadence ------------------------------------------------------------
+# Must stay at or below the shortest dashboard panel window. The Collective
+# Health tiles read 15m windows, so 60s is comfortable.
+poll_interval_seconds: 60
+
+# --- Endpoints ---------------------------------------------------------------
+# Each record is shipped as one HEC event with "api_endpoint" added, which is
+# how the dashboard tells them apart.
+#
+# Feeds which dashboard panels:
+#   /admin/stats/appliances              -> Health by Appliance, Resource
+#                                           Utilization, Sessions by Gateway,
+#                                           Appliances Healthy tile, Appliance
+#                                           dropdown
+#   /admin/sites/status                  -> Sites Healthy tile
+#   /admin/stats/active-sessions/dashboard -> Live Sessions tile, Session Trend
+#   /admin/stats/active-sessions/dn      -> (client version/OS -- reserved for
+#                                           the Clients Fleet dashboard)
+#   /admin/on-boarded-devices            -> Registered Devices tile
+endpoints:
+  - path: /admin/stats/appliances
+    # DO NOT set ship_on_change here. Availability math counts per-poll samples
+    # per appliance; gating the stream breaks it. The feed is tiny anyway.
+  - path: /admin/sites/status
+  - path: /admin/stats/active-sessions/dashboard
+  - path: /admin/stats/active-sessions/dn
+  - path: /admin/on-boarded-devices
+    # Registry-style, near-static, ~520 devices re-shipped every 60s would be
+    # ~0.29 GB/day. Ship only on content change, plus a forced re-ship every
+    # heartbeat_seconds.
+    ship_on_change: true
+    # MUST stay <= the shortest panel window that reads this feed. The
+    # Registered Devices tile uses a 15m window, so 600 is the ceiling.
+    heartbeat_seconds: 600
+    hash_exclude_fields: [lastSeenAt]
+
+# --- Entitlement / policy feed (REQUIRED for this dashboard) -----------------
+# These produce the flat entitlement_catalog + entitlement_grant events behind
+# the "Top Entitlements by assignment", "Top Policies", and "Assigned vs
+# Actually Used" panels. Policy names exist NOWHERE ELSE -- the LogForwarder
+# audit stream does not carry them.
+#
+# Enabling this adds zero extra controller calls: the flat events are built from
+# the same catalog + session-info walk the snapshot already performs.
+#
+# IMPORTANT: both event types are FULL RE-SHIPS on a heartbeat, not deltas.
+# Every dashboard panel reading them calls the `appgate_latest_snapshot` macro
+# to reduce to the newest sweep. Without it, counts are multiplied by the number
+# of sweeps in the time window.
+flat_resolution_enabled: true
+flat_catalog_heartbeat_seconds: 300
+
+resolution_snapshot_enabled: true
+resolution_snapshot_interval_seconds: 60
+resolution_snapshot_heartbeat_seconds: 300
+resolution_snapshot_workers: 8
+
+# --- Off for this build ------------------------------------------------------
+# Superseded: AppGate ships UCS-resolved attributes to the SIEM already, as
+# scripted_user_claims.* on cz-controllerd authorization_succeeded events.
+session_enrichment_enabled: false
+
+# Prometheus appliance metrics (license %, cert expiry, replication lag, IP-pool
+# %). Not used by Collective Health -- the /admin/stats/appliances JSON already
+# covers CPU/disk/RAM/sessions. Enable later if you want deeper gauges.
+appliance_metrics_enabled: false
+appliance_metrics_interval_seconds: 60
+appliance_metrics_source: api

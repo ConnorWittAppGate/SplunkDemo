@@ -1,0 +1,1085 @@
+<dashboard version="2" theme="light">
+  <label>AppGate Collective Health</label>
+  <description>Zero-trust telemetry from the AppGate LogForwarder audit stream. Tab 1 (Health Overview): appliance liveness, entitlement assignment vs actual use, resource access, authentication health, appliance attack surface. Tab 2 (Investigate User): per-user identity summary. Tab 3 (Compare Users): cohort matrix, privilege gap, and A-vs-B entitlement/policy/resource differentials. Tables are click-to-filter -- clicking a row sets the matching filter. Portable to any collective with an AppGate LogForwarder: no usernames, appliance hostnames, or entitlement names are hardcoded, every filter is a free-text wildcard box defaulting to `*`, and the Investigate and Compare tabs seed themselves from whatever identities your data contains. The only thing to configure is the `appgate_index` macro. All queries verified against live event shapes.</description>
+  <definition><![CDATA[
+{
+  "title": "AppGate Collective Health",
+  "description": "Zero-trust telemetry from the AppGate LogForwarder audit stream. Tab 1 (Health Overview): appliance liveness, entitlement assignment vs actual use, resource access, authentication health, appliance attack surface. Tab 2 (Investigate User): per-user identity summary. Tab 3 (Compare Users): cohort matrix, privilege gap, and A-vs-B entitlement/policy/resource differentials. Tables are click-to-filter -- clicking a row sets the matching filter. Portable to any collective with an AppGate LogForwarder: no usernames, appliance hostnames, or entitlement names are hardcoded, every filter is a free-text wildcard box defaulting to `*`, and the Investigate and Compare tabs seed themselves from whatever identities your data contains. The only thing to configure is the `appgate_index` macro. All queries verified against live event shapes.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time Range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-24h,now"
+      }
+    },
+    "input_appliance": {
+      "type": "input.text",
+      "title": "Appliance  (* = all, wildcards ok)",
+      "options": {
+        "defaultValue": "*",
+        "token": "appliance"
+      }
+    },
+    "input_user": {
+      "type": "input.text",
+      "title": "User  (* = all, wildcards ok)",
+      "options": {
+        "defaultValue": "*",
+        "token": "user"
+      }
+    },
+    "input_entitlement": {
+      "type": "input.text",
+      "title": "Entitlement  (* = all, wildcards ok)",
+      "options": {
+        "defaultValue": "*",
+        "token": "entitlement"
+      }
+    },
+    "input_user_a": {
+      "type": "input.text",
+      "title": "User A  (Compare tab — * = auto)",
+      "options": {
+        "defaultValue": "*",
+        "token": "user_a"
+      }
+    },
+    "input_user_b": {
+      "type": "input.text",
+      "title": "User B  (Compare tab — * = auto)",
+      "options": {
+        "defaultValue": "*",
+        "token": "user_b"
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          },
+          "refresh": "5m",
+          "refreshType": "delay"
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_tile_users": {
+      "type": "ds.search",
+      "name": "Tile: active users",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* | stats dc(ag_user) as v"
+      }
+    },
+    "ds_tile_appliances": {
+      "type": "ds.search",
+      "name": "Tile: appliances reporting",
+      "options": {
+        "query": "`appgate_lf` | search appliance=* | stats dc(appliance) as v"
+      }
+    },
+    "ds_tile_sessions": {
+      "type": "ds.search",
+      "name": "Tile: sessions established",
+      "options": {
+        "query": "`appgate_lf` | search event_type IN (session_created, session_reconnected) | timechart span=1h count as v"
+      }
+    },
+    "ds_tile_denials": {
+      "type": "ds.search",
+      "name": "Tile: access denials",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access (ag_action=drop OR ag_action=reject) | stats count as v"
+      }
+    },
+    "ds_tile_authfail": {
+      "type": "ds.search",
+      "name": "Tile: authentication failures",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authentication_failed | stats count as v"
+      }
+    },
+    "ds_tile_ssh": {
+      "type": "ds.search",
+      "name": "Tile: appliance SSH access failures",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ssh_access_failed | stats count as v"
+      }
+    },
+    "ds_appliance_liveness": {
+      "type": "ds.search",
+      "name": "Appliance liveness",
+      "options": {
+        "query": "`appgate_lf` | search appliance=* | stats max(_time) as last_event, count as events, dc(daemon) as daemon_count, values(daemon) as subsystems, dc(ag_user) as users by appliance | eval silent_min=round((now()-last_event)/60, 1) | eval last_event=strftime(last_event, \"%F %T\") | sort - silent_min | rename appliance as Appliance, last_event as \"Last Event\", silent_min as \"Silent (min)\", events as Events, users as Users, daemon_count as Daemons, subsystems as Subsystems"
+      }
+    },
+    "ds_users_per_appliance": {
+      "type": "ds.search",
+      "name": "Users per appliance",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* appliance=\"$appliance$\" | stats dc(ag_user) as users by appliance | sort - users | rename appliance as Appliance, users as Users"
+      }
+    },
+    "ds_event_volume": {
+      "type": "ds.search",
+      "name": "Event volume by appliance",
+      "options": {
+        "query": "`appgate_lf` | search appliance=\"$appliance$\" | timechart span=1h count by appliance"
+      }
+    },
+    "ds_controller_messages": {
+      "type": "ds.search",
+      "name": "Controller messages",
+      "options": {
+        "query": "`appgate_lf` | search event_type=admin_message_posted | sort - _time | table _time, msg_level, msg_category, msg_source, msg_text | rename msg_level as Level, msg_category as Category, msg_source as Source, msg_text as Message"
+      }
+    },
+    "ds_ent_used": {
+      "type": "ds.search",
+      "name": "Entitlements by actual use",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access entitlement=\"$entitlement$\" | stats count as accesses, dc(ag_user) as users, dc(dest_ip) as resources by entitlement | sort - accesses | rename entitlement as Entitlement, accesses as Accesses, users as Users, resources as Resources"
+      }
+    },
+    "ds_drift": {
+      "type": "ds.search",
+      "name": "Assigned vs actually used",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded entitlement_names=* | mvexpand entitlement_names | stats dc(ag_user) as assigned by entitlement_names | rename entitlement_names as ent | append [ search `appgate_lf` | search event_type=ip_access | stats dc(ag_user) as used by entitlement | rename entitlement as ent ] | stats max(assigned) as assigned, max(used) as used by ent | fillnull value=0 assigned used | eval gap=if(assigned-used>0, assigned-used, 0) | sort - gap | rename ent as Entitlement, assigned as Assigned, used as Used, gap as \"Assigned, Never Used\""
+      }
+    },
+    "ds_traffic": {
+      "type": "ds.search",
+      "name": "Traffic allowed vs denied",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access entitlement=\"$entitlement$\" | timechart span=1h count by ag_action"
+      }
+    },
+    "ds_ent_outcomes": {
+      "type": "ds.search",
+      "name": "Entitlement access outcomes",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access entitlement=\"$entitlement$\" | stats count as total, count(eval(ag_action=\"allow\")) as allowed, count(eval(ag_action=\"drop\" OR ag_action=\"reject\")) as denied by entitlement | eval deny_pct=if(total>0, round(denied*100/total, 1), 0) | sort - denied | rename entitlement as Entitlement, total as Requests, allowed as Allowed, denied as Denied, deny_pct as \"Deny %\""
+      }
+    },
+    "ds_top_resources": {
+      "type": "ds.search",
+      "name": "Top resources accessed",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access entitlement=\"$entitlement$\" ag_user=\"$user$\" | eval dest_port=coalesce(dest_port, \"--\") | stats count as accesses, dc(ag_user) as users by dest_ip, dest_port, ag_protocol | sort - accesses | rename dest_ip as Destination, dest_port as Port, ag_protocol as Protocol, accesses as Accesses, users as Users"
+      }
+    },
+    "ds_auth_outcomes": {
+      "type": "ds.search",
+      "name": "Authentication outcomes over time",
+      "options": {
+        "query": "`appgate_lf` | search event_type IN (authentication_succeeded, authentication_failed) | timechart span=1h count by event_type"
+      }
+    },
+    "ds_auth_failures": {
+      "type": "ds.search",
+      "name": "Authentication failures",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authentication_failed ag_user=\"$user$\" | sort - _time | table _time, ag_user, ag_reason, ag_client_ip, ag_country, device_hostname, appliance | rename ag_user as User, ag_reason as Reason, ag_client_ip as \"Client IP\", ag_country as Country, device_hostname as Device, appliance as Appliance"
+      }
+    },
+    "ds_ssh_attacks": {
+      "type": "ds.search",
+      "name": "Appliance SSH access failures by origin",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ssh_access_failed | stats count as attempts, dc(ag_client_ip) as source_ips, values(ag_user) as accounts, latest(_time) as last by ag_country, appliance | eval last=strftime(last, \"%F %T\") | sort - attempts | rename ag_country as Country, appliance as Appliance, attempts as Attempts, source_ips as \"Source IPs\", accounts as \"Targeted Accounts\", last as Latest"
+      }
+    },
+    "ds_session_churn": {
+      "type": "ds.search",
+      "name": "Session and tunnel churn",
+      "options": {
+        "query": "`appgate_lf` | search event_type IN (session_created, session_reconnected, session_removed, tunnel_connected, tunnel_established, tunnel_closed) | timechart span=1h count by event_type"
+      }
+    },
+    "ds_active_users": {
+      "type": "ds.search",
+      "name": "Active users over time",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* | timechart span=1h dc(ag_user) as Users"
+      }
+    },
+    "ds_map": {
+      "type": "ds.search",
+      "name": "Client activity map",
+      "options": {
+        "query": "`appgate_lf` | search ag_lat=* ag_user=\"$user$\" | geostats latfield=ag_lat longfield=ag_lon count"
+      }
+    },
+    "ds_admin_activity": {
+      "type": "ds.search",
+      "name": "Admin and configuration activity",
+      "options": {
+        "query": "`appgate_lf` | search event_type IN (entities_listed, on_boarded_devices_listed, entity_created, entity_updated, entity_deleted, admin_authorization_succeeded, admin_authorization_failed) ag_user=\"$user$\" | sort - _time | table _time, event_type, entity_type, entity_name, ag_user, ag_client_ip, exec_ms, appliance | rename event_type as Event, entity_type as \"Object Type\", entity_name as Object, ag_user as Admin, ag_client_ip as \"Client IP\", exec_ms as \"ms\", appliance as Appliance"
+      }
+    },
+
+    "ui_ds_user_list": {
+      "type": "ds.search",
+      "name": "UI: users in window",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* | stats count as events, latest(_time) as last, dc(appliance) as appliances by ag_user | eval last=strftime(last, \"%F %T\") | sort - events | rename ag_user as User, events as Events, last as \"Last Seen\", appliances as Appliances"
+      }
+    },
+    "ui_ds_identity_summary": {
+      "type": "ds.search",
+      "name": "UI: identity summary",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* `appgate_top_user(\"$user$\")` | stats values(ag_user) as \"User\", values(ag_ou) as \"Org Unit\", values(first_name) as \"First Name\", values(last_name) as \"Last Name\", values(idp) as \"Identity Provider\", values(auth_type) as \"Auth Type\", values(clearance) as \"Clearance\", values(risk_score) as \"Risk Score\", values(user_role) as \"Role\", values(home_base) as \"Home Base\", values(device_trust) as \"Device Trust\", values(geo_location) as \"Geo Location\", values(mfa_provided) as \"MFA Provided\", values(ia_training) as \"IA Training Current\", values(device_hostname) as \"Device Hostname\", values(device_os) as \"Operating System\", values(device_client_type) as \"Client Type\", values(client_version) as \"Client Version\", values(ag_country) as \"Country\", values(ag_city) as \"City\", dc(ag_client_ip) as \"Distinct Client IPs\", dc(appliance) as \"Appliances Used\", dc(entitlement) as \"Entitlements Used\", dc(session) as \"Sessions\", count as \"Total Events\", earliest(_time) as f, latest(_time) as l | eval \"First Seen\"=strftime(f, \"%F %T\"), \"Last Seen\"=strftime(l, \"%F %T\") | fields - f, l | transpose 1 | rename column as Field, \"row 1\" as Value | search Value=*"
+      }
+    },
+
+    "cmp_ds_matrix": {
+      "type": "ds.search",
+      "name": "CMP: user comparison matrix (all users)",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* | stats count as events, count(eval(event_type=\"authentication_succeeded\")) as auth_ok, count(eval(event_type=\"authentication_failed\")) as auth_fail, count(eval(event_type=\"ip_access\")) as requests, count(eval(event_type=\"ip_access\" AND (ag_action=\"drop\" OR ag_action=\"reject\"))) as denials, dc(entitlement) as ent_used, dc(dest_ip) as resources, dc(ag_client_ip) as ips, dc(ag_country) as countries, dc(appliance) as appliances, latest(_time) as last by ag_user | eval fail_pct=if(auth_ok+auth_fail>0, round(auth_fail*100/(auth_ok+auth_fail), 1), 0), deny_pct=if(requests>0, round(denials*100/requests, 1), 0), last=strftime(last, \"%F %T\") | sort - events | rename ag_user as User, events as Events, auth_ok as \"Auth OK\", auth_fail as \"Auth Fail\", fail_pct as \"Fail %\", requests as Requests, denials as Denials, deny_pct as \"Deny %\", ent_used as \"Entitlements Used\", resources as Resources, ips as \"Client IPs\", countries as Countries, appliances as Appliances, last as \"Last Seen\" | table User, Events, \"Auth OK\", \"Auth Fail\", \"Fail %\", Requests, Denials, \"Deny %\", \"Entitlements Used\", Resources, \"Client IPs\", Countries, Appliances, \"Last Seen\""
+      }
+    },
+    "cmp_ds_gap": {
+      "type": "ds.search",
+      "name": "CMP: privilege gap by user",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded entitlement_names=* | mvexpand entitlement_names | stats dc(entitlement_names) as assigned by ag_user | append [ search `appgate_lf` | search event_type=ip_access | stats dc(entitlement) as used by ag_user ] | stats max(assigned) as assigned, max(used) as used by ag_user | fillnull value=0 assigned used | eval never_used=if(assigned-used>0, assigned-used, 0), used_pct=if(assigned>0, round(used*100/assigned, 1), 0) | sort - never_used | rename ag_user as User, assigned as Assigned, used as Used, never_used as \"Never Used\", used_pct as \"Used %\" | table User, Assigned, Used, \"Never Used\", \"Used %\""
+      }
+    },
+    "cmp_ds_gap_chart": {
+      "type": "ds.search",
+      "name": "CMP: assigned vs used, top 15 users",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded entitlement_names=* | mvexpand entitlement_names | stats dc(entitlement_names) as assigned by ag_user | append [ search `appgate_lf` | search event_type=ip_access | stats dc(entitlement) as used by ag_user ] | stats max(assigned) as assigned, max(used) as used by ag_user | fillnull value=0 assigned used | eval never_used=if(assigned-used>0, assigned-used, 0) | sort - never_used | head 15 | rename ag_user as User, assigned as Assigned, used as Used | table User, Assigned, Used"
+      }
+    },
+    "cmp_ds_head2head": {
+      "type": "ds.search",
+      "name": "CMP: user A vs user B, side by side",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* `appgate_pair(\"$user_a$\",\"$user_b$\")` | `appgate_slot(\"$user_a$\",\"$user_b$\")` | stats count as \"Total Events\", count(eval(event_type=\"authentication_succeeded\")) as \"Auth Successes\", count(eval(event_type=\"authentication_failed\")) as \"Auth Failures\", count(eval(event_type=\"ip_access\")) as \"Access Requests\", count(eval(event_type=\"ip_access\" AND (ag_action=\"drop\" OR ag_action=\"reject\"))) as \"Access Denials\", dc(entitlement) as \"Entitlements Used\", dc(dest_ip) as \"Resources Reached\", dc(ag_client_ip) as \"Client IPs\", dc(ag_country) as \"Countries\", dc(appliance) as \"Appliances\", dc(session) as \"Sessions\", values(ag_ou) as \"Org Unit\", values(idp) as \"Identity Provider\", values(clearance) as \"Clearance\", values(risk_score) as \"Risk Score\", values(user_role) as \"Role\", values(home_base) as \"Home Base\", values(device_trust) as \"Device Trust\", values(mfa_provided) as \"MFA Provided\", values(ia_training) as \"IA Training\", values(device_os) as \"Operating System\", values(device_client_type) as \"Client Type\", values(client_version) as \"Client Version\", values(device_firewall) as \"Firewall Enabled\", values(device_user_admin) as \"Local Admin\", values(device_stig) as \"STIG\", earliest(_time) as f, latest(_time) as l by ag_user, slot | eval \"First Seen\"=strftime(f, \"%F %T\"), \"Last Seen\"=strftime(l, \"%F %T\") | sort slot | fields - f, l, slot | transpose 0 header_field=ag_user column_name=Metric"
+      }
+    },
+    "cmp_ds_ent_diff": {
+      "type": "ds.search",
+      "name": "CMP: entitlement differential A vs B",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded entitlement_names=* `appgate_pair(\"$user_a$\",\"$user_b$\")` | `appgate_slot(\"$user_a$\",\"$user_b$\")` | mvexpand entitlement_names | stats count(eval(slot=\"A\")) as a, count(eval(slot=\"B\")) as b by entitlement_names | eval Held=case(a>0 AND b>0, \"both\", a>0, \"User A only\", b>0, \"User B only\") | sort Held, entitlement_names | rename entitlement_names as Entitlement | table Entitlement, Held"
+      }
+    },
+    "cmp_ds_pol_diff": {
+      "type": "ds.search",
+      "name": "CMP: policy differential A vs B",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded policy_names=* `appgate_pair(\"$user_a$\",\"$user_b$\")` | `appgate_slot(\"$user_a$\",\"$user_b$\")` | mvexpand policy_names | stats count(eval(slot=\"A\")) as a, count(eval(slot=\"B\")) as b by policy_names | eval Held=case(a>0 AND b>0, \"both\", a>0, \"User A only\", b>0, \"User B only\") | sort Held, policy_names | rename policy_names as Policy | table Policy, Held"
+      }
+    },
+    "cmp_ds_res_diff": {
+      "type": "ds.search",
+      "name": "CMP: resource reach differential A vs B",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access `appgate_pair(\"$user_a$\",\"$user_b$\")` | `appgate_slot(\"$user_a$\",\"$user_b$\")` | eval dest_port=coalesce(dest_port, \"--\") | stats count(eval(slot=\"A\")) as a, count(eval(slot=\"B\")) as b, values(ag_action) as actions by dest_ip, dest_port, ag_protocol, entitlement | eval Reached=case(a>0 AND b>0, \"both\", a>0, \"User A only\", b>0, \"User B only\") | sort Reached, - a, - b | rename dest_ip as Destination, dest_port as Port, ag_protocol as Protocol, entitlement as Entitlement, a as \"A Accesses\", b as \"B Accesses\", actions as Actions | table Destination, Port, Protocol, Entitlement, Reached, \"A Accesses\", \"B Accesses\", Actions"
+      }
+    }
+  },
+  "visualizations": {
+    "viz_header": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# AppGate ZTNA — Collective Health\nCollective telemetry from the **LogForwarder** audit stream. **Every table here is click-to-filter** — click an appliance, entitlement, or user row and the tab scopes to it. The filter boxes above accept wildcards — a partial appliance address, an entitlement prefix, `*svc*` for service accounts; **clear a filter by setting it back to `*`**. Panels refresh every 5 minutes on their own. Switch to **Investigate User** to scope to one identity.",
+        "fontSize": "default"
+      }
+    },
+    "sec_glance": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## At a Glance"
+      }
+    },
+    "sec_appliance": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Appliance Health\nHealth is inferred from the audit stream: an appliance that stops emitting events is the primary failure signal. **Silent (min)** is the gap since its last event of any kind — amber past 15 minutes, red past 60."
+      }
+    },
+    "sec_policy": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Entitlements\n**Actual Use** comes from `rule_name` on **ip_access** (the gateway) — what actually carried traffic. **Assigned vs Actually Used** joins that against `entitlement_names` on **authorization_succeeded** (the controller) to expose the least-privilege gap, straight from the audit stream with no API poller."
+      }
+    },
+    "sec_access": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Resource Access"
+      }
+    },
+    "sec_security": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Authentication & Attack Surface"
+      }
+    },
+    "sec_audit": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Admin Audit"
+      }
+    },
+    "viz_tile_users": {
+      "type": "splunk.singlevalue",
+      "title": "Active Users",
+      "dataSources": {
+        "primary": "ds_tile_users"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "unit": "users",
+        "unitPosition": "after",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_tile_appliances": {
+      "type": "splunk.singlevalue",
+      "title": "Appliances Reporting",
+      "dataSources": {
+        "primary": "ds_tile_appliances"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_tile_sessions": {
+      "type": "splunk.singlevalue",
+      "title": "Sessions Established",
+      "description": "session_created plus session_reconnected -- a rate, not a concurrent count.",
+      "dataSources": {
+        "primary": "ds_tile_sessions"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "trendValue": "> primary | seriesByName('v') | delta(-1)",
+        "sparklineValues": "> primary | seriesByName('v')",
+        "trendDisplay": "absolute",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_tile_denials": {
+      "type": "splunk.singlevalue",
+      "title": "Access Denials",
+      "dataSources": {
+        "primary": "ds_tile_denials"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "majorColor": "> majorValue | rangeValue(zeroGoodConfig)",
+        "zeroGoodConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "value": "#D41F1F" }
+        ],
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_tile_authfail": {
+      "type": "splunk.singlevalue",
+      "title": "Auth Failures",
+      "dataSources": {
+        "primary": "ds_tile_authfail"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "majorColor": "> majorValue | rangeValue(authFailConfig)",
+        "authFailConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "to": 25, "value": "#CBA700" },
+          { "from": 25, "value": "#D41F1F" }
+        ],
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_tile_ssh": {
+      "type": "splunk.singlevalue",
+      "title": "Appliance SSH Failures",
+      "description": "Failed SSH logins against appliances -- internet-facing brute-force attempts.",
+      "dataSources": {
+        "primary": "ds_tile_ssh"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "majorColor": "> majorValue | rangeValue(sshConfig)",
+        "sshConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "value": "#D41F1F" }
+        ],
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_appliance_liveness": {
+      "type": "splunk.table",
+      "title": "Appliance Liveness",
+      "description": "Appliance identity comes from the event's top-level hostname -- gateways report an IP, controllers an FQDN. A silent appliance is the clearest health signal the audit stream offers. Click a row to filter the rest of the tab to that appliance; this table deliberately ignores the Appliance filter so it always lists every appliance.",
+      "dataSources": {
+        "primary": "ds_appliance_liveness"
+      },
+      "options": {
+        "count": 25,
+        "columnFormat": {
+          "Silent (min)": {
+            "textColor": "> table | seriesByName('Silent (min)') | rangeValue(silentColorConfig)"
+          }
+        },
+        "silentColorConfig": [
+          { "to": 15, "value": "#118832" },
+          { "from": 15, "to": 60, "value": "#CBA700" },
+          { "from": 60, "value": "#D41F1F" }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "appliance", "key": "row.Appliance.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_users_per_appliance": {
+      "type": "splunk.bar",
+      "title": "Users per Appliance",
+      "description": "Click a bar to filter the tab to that appliance.",
+      "dataSources": {
+        "primary": "ds_users_per_appliance"
+      },
+      "options": {
+        "legendDisplay": "off",
+        "yAxisTitleText": "Appliance",
+        "xAxisTitleText": "Distinct Users"
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "appliance", "key": "row.Appliance.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_event_volume": {
+      "type": "splunk.line",
+      "title": "Event Volume by Appliance",
+      "description": "A line dropping to zero is an appliance that stopped reporting.",
+      "dataSources": {
+        "primary": "ds_event_volume"
+      },
+      "options": {
+        "legendDisplay": "right",
+        "yAxisTitleText": "Events"
+      }
+    },
+    "viz_controller_messages": {
+      "type": "splunk.table",
+      "title": "Controller Messages",
+      "description": "Controller-posted warnings and notices -- deprecated API use, version issues, operational advisories.",
+      "dataSources": {
+        "primary": "ds_controller_messages"
+      },
+      "options": {
+        "count": 25,
+        "columnFormat": {
+          "Level": {
+            "textColor": "> table | seriesByName('Level') | matchValue(levelColorConfig)"
+          }
+        },
+        "levelColorConfig": [
+          { "match": "Error", "value": "#D41F1F" },
+          { "match": "Warning", "value": "#CBA700" },
+          { "match": "Information", "value": "#118832" }
+        ]
+      }
+    },
+    "viz_ent_used": {
+      "type": "splunk.table",
+      "title": "Entitlements — by Actual Use",
+      "description": "Ranked by traffic that actually traversed the entitlement. Click a row to filter the tab to that entitlement.",
+      "dataSources": {
+        "primary": "ds_ent_used"
+      },
+      "options": {
+        "count": 25,
+        "dataOverlayMode": "heatmap"
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "entitlement", "key": "row.Entitlement.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_drift": {
+      "type": "splunk.table",
+      "title": "Assigned vs Actually Used",
+      "description": "The least-privilege gap: entitlements granted to users who never exercised them. High values are over-provisioning. This is the panel to build the demo narrative around. Click a row to filter the tab to that entitlement.",
+      "dataSources": {
+        "primary": "ds_drift"
+      },
+      "options": {
+        "count": 30,
+        "columnFormat": {
+          "Assigned, Never Used": {
+            "textColor": "> table | seriesByName('Assigned, Never Used') | rangeValue(gapColorConfig)"
+          }
+        },
+        "gapColorConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "to": 5, "value": "#CBA700" },
+          { "from": 5, "value": "#D41F1F" }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "entitlement", "key": "row.Entitlement.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_traffic": {
+      "type": "splunk.area",
+      "title": "Traffic — Allowed vs Dropped vs Rejected",
+      "dataSources": {
+        "primary": "ds_traffic"
+      },
+      "options": {
+        "stackMode": "stacked",
+        "legendDisplay": "bottom",
+        "fieldColors": {
+          "allow": "#118832",
+          "drop": "#CBA700",
+          "reject": "#D41F1F"
+        }
+      }
+    },
+    "viz_ent_outcomes": {
+      "type": "splunk.table",
+      "title": "Entitlement Access Outcomes",
+      "description": "A high Deny % usually means a misconfigured entitlement or a condition failing unexpectedly. Click a row to filter the tab to that entitlement.",
+      "dataSources": {
+        "primary": "ds_ent_outcomes"
+      },
+      "options": {
+        "count": 25,
+        "columnFormat": {
+          "Deny %": {
+            "textColor": "> table | seriesByName('Deny %') | rangeValue(denyColorConfig)"
+          }
+        },
+        "denyColorConfig": [
+          { "to": 5, "value": "#118832" },
+          { "from": 5, "to": 20, "value": "#CBA700" },
+          { "from": 20, "value": "#D41F1F" }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "entitlement", "key": "row.Entitlement.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_top_resources": {
+      "type": "splunk.table",
+      "title": "Top Resources Accessed",
+      "dataSources": {
+        "primary": "ds_top_resources"
+      },
+      "options": {
+        "count": 25,
+        "columnFormat": {
+          "Port": {
+            "textColor": "> table | seriesByName('Port') | matchValue(portColorConfig)"
+          }
+        },
+        "portColorConfig": [
+          { "match": "445", "value": "#D41F1F" },
+          { "match": "3389", "value": "#D41F1F" },
+          { "match": "22", "value": "#CBA700" }
+        ]
+      }
+    },
+    "viz_auth_outcomes": {
+      "type": "splunk.column",
+      "title": "Authentication Outcomes",
+      "dataSources": {
+        "primary": "ds_auth_outcomes"
+      },
+      "options": {
+        "stackMode": "stacked",
+        "legendDisplay": "bottom",
+        "fieldColors": {
+          "authentication_succeeded": "#118832",
+          "authentication_failed": "#D41F1F"
+        }
+      }
+    },
+    "viz_auth_failures": {
+      "type": "splunk.table",
+      "title": "Authentication Failures",
+      "description": "Includes the client device hostname and geolocated client IP. Click a row to scope the dashboard to that user -- the Investigate User tab follows.",
+      "dataSources": {
+        "primary": "ds_auth_failures"
+      },
+      "options": {
+        "count": 50
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "user", "key": "row.User.value" },
+              { "token": "user_a", "key": "row.User.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_ssh_attacks": {
+      "type": "splunk.table",
+      "title": "Appliance SSH Attack Surface",
+      "description": "Failed SSH logins against appliances, grouped by origin country and target. Unexpected countries against a root account are internet background brute-force -- a strong talking point for why the appliance should not expose SSH. Click a row to filter the tab to the targeted appliance.",
+      "dataSources": {
+        "primary": "ds_ssh_attacks"
+      },
+      "options": {
+        "count": 25,
+        "dataOverlayMode": "heatmap"
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "appliance", "key": "row.Appliance.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_session_churn": {
+      "type": "splunk.column",
+      "title": "Session & Tunnel Churn",
+      "description": "session_created / _reconnected / _removed plus tunnel_connected / _established / _closed.",
+      "dataSources": {
+        "primary": "ds_session_churn"
+      },
+      "options": {
+        "stackMode": "stacked",
+        "legendDisplay": "bottom"
+      }
+    },
+    "viz_active_users": {
+      "type": "splunk.line",
+      "title": "Active Users Over Time",
+      "dataSources": {
+        "primary": "ds_active_users"
+      },
+      "options": {
+        "legendDisplay": "off",
+        "yAxisTitleText": "Distinct Users"
+      }
+    },
+    "viz_map": {
+      "type": "splunk.map",
+      "title": "Client Activity Map",
+      "description": "Geolocated client source IPs. Legitimately empty on an all-RFC1918 collective -- the LogForwarder emits no geoip block for private client addresses, so an empty map here means internal clients, not a broken panel.",
+      "dataSources": {
+        "primary": "ds_map"
+      },
+      "options": {}
+    },
+    "viz_admin_activity": {
+      "type": "splunk.table",
+      "title": "Admin & Configuration Activity",
+      "description": "Admin authorizations and object reads/changes, with controller execution time. Object Type shows which entity kinds your collective emits.",
+      "dataSources": {
+        "primary": "ds_admin_activity"
+      },
+      "options": {
+        "count": 50,
+        "columnFormat": {
+          "Event": {
+            "textColor": "> table | seriesByName('Event') | matchValue(adminEventColorConfig)"
+          }
+        },
+        "adminEventColorConfig": [
+          { "match": "entity_deleted", "value": "#D41F1F" },
+          { "match": "admin_authorization_failed", "value": "#D41F1F" },
+          { "match": "entity_updated", "value": "#CBA700" },
+          { "match": "entity_created", "value": "#118832" }
+        ]
+      }
+    },
+
+    "ui_viz_header": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# AppGate ZTNA — User Investigation\n**Click any row in Users in Window** — Identity Summary loads that identity, and it also becomes User A on the Compare tab. (Typing a name, or a pattern like `*admin*`, in the **User** box does the same.) With the box left at `*`, Identity Summary profiles the **busiest identity in the window**, so this tab is never empty on arrival. Rows with no value are omitted — a missing Clearance or Risk Score means that user's events carry no `scripted_user_claims` block, which is normal for service accounts. The Appliance and Entitlement filters do not apply on this tab.",
+        "fontSize": "default"
+      }
+    },
+    "ui_viz_user_list": {
+      "type": "splunk.table",
+      "title": "Users in Window",
+      "description": "Every identity seen in the time range. Click a row to load that user into Identity Summary and into User A on the Compare tab. Deliberately ignores the User filter so it always shows the full list.",
+      "dataSources": {
+        "primary": "ui_ds_user_list"
+      },
+      "options": {
+        "count": 100,
+        "dataOverlayMode": "heatmap"
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "user", "key": "row.User.value" },
+              { "token": "user_a", "key": "row.User.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "ui_viz_identity_summary": {
+      "type": "splunk.table",
+      "title": "Identity Summary",
+      "description": "Identity, UCS risk profile, device, and activity footprint for the selected user.",
+      "dataSources": {
+        "primary": "ui_ds_identity_summary"
+      },
+      "options": {
+        "count": 40
+      }
+    },
+
+    "cmp_viz_header": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# AppGate ZTNA — Compare Users\nThe **cohort** panels below rank every identity against the same measures and need no input. The **head-to-head** panels compare exactly two. With **User A** and **User B** left at `*` they **seed themselves from your data** — the two busiest identities in the window — so this tab is populated on load against any collective, with no names configured anywhere. Pin either one by typing a name, or by clicking: a row in **User Comparison Matrix** sets User A, a row in **Privilege Gap by User** (or a bar in the chart) sets User B. Pin one and leave the other at `*` and it fills with the busiest other identity. These two tokens are separate from the collective **User** filter, so head-to-head never goes blank because a wildcard was left in that box.",
+        "fontSize": "default"
+      }
+    },
+    "cmp_sec_cohort": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Cohort — every user, same measures\nNo input needed. Sort any column to find the outlier: highest deny rate, widest privilege gap, most client IPs, most countries. Then click the outlier's row to drop it straight into the head-to-head comparison below."
+      }
+    },
+    "cmp_sec_h2h": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Head to Head\n**Who A and B are is shown by the two column headers of the table below left** — the differential tables to its right use `User A only` / `User B only` in the same order. Change the pair with the **User A** / **User B** boxes, or by clicking a row in the cohort panels above. The differential tables answer \"what can A reach that B cannot,\" which is the access-review question a raw per-user view can't. Read **Policy Differential** first — one policy difference usually explains a long list of entitlement differences."
+      }
+    },
+    "cmp_viz_matrix": {
+      "type": "splunk.table",
+      "title": "User Comparison Matrix",
+      "description": "Every identity in the window scored on the same measures. Fail % and Deny % are normalized, so a low-volume user with a high failure rate ranks as loudly as a busy one. Click a row to load that identity as User A in the head-to-head panels below.",
+      "dataSources": {
+        "primary": "cmp_ds_matrix"
+      },
+      "options": {
+        "count": 100,
+        "columnFormat": {
+          "Fail %": {
+            "textColor": "> table | seriesByName('Fail %') | rangeValue(pctColorConfig)"
+          },
+          "Deny %": {
+            "textColor": "> table | seriesByName('Deny %') | rangeValue(pctColorConfig)"
+          }
+        },
+        "pctColorConfig": [
+          { "to": 5, "value": "#118832" },
+          { "from": 5, "to": 20, "value": "#CBA700" },
+          { "from": 20, "value": "#D41F1F" }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "user_a", "key": "row.User.value" },
+              { "token": "user", "key": "row.User.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "cmp_viz_gap": {
+      "type": "splunk.table",
+      "title": "Privilege Gap by User",
+      "description": "Entitlements each user was granted versus how many they actually exercised. Sorted by the widest gap -- the top row is your most over-provisioned identity. Click a row to load that identity as User B in the head-to-head panels below.",
+      "dataSources": {
+        "primary": "cmp_ds_gap"
+      },
+      "options": {
+        "count": 100,
+        "columnFormat": {
+          "Never Used": {
+            "textColor": "> table | seriesByName('Never Used') | rangeValue(gapColorConfig)"
+          }
+        },
+        "gapColorConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "to": 5, "value": "#CBA700" },
+          { "from": 5, "value": "#D41F1F" }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "user_b", "key": "row.User.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "cmp_viz_gap_chart": {
+      "type": "splunk.bar",
+      "title": "Assigned vs Used — Top 15 Gaps",
+      "description": "The same comparison as a shape. A long Assigned bar next to a short Used bar is over-provisioning you can see across the room. Click a bar to load that identity as User B below.",
+      "dataSources": {
+        "primary": "cmp_ds_gap_chart"
+      },
+      "options": {
+        "legendDisplay": "bottom",
+        "yAxisTitleText": "User",
+        "xAxisTitleText": "Entitlements",
+        "fieldColors": {
+          "Assigned": "#CBA700",
+          "Used": "#118832"
+        }
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              { "token": "user_b", "key": "row.User.value" }
+            ]
+          }
+        }
+      ]
+    },
+    "cmp_viz_head2head": {
+      "type": "splunk.table",
+      "title": "Head to Head — A vs B",
+      "description": "One column per user, one row per measure -- identity, risk claims, device posture, and activity totals side by side. The LEFT column is User A and the right is User B; the headers are the real usernames, which is how you read the A/B differential tables beside this one. Blank rows mean neither user's events carry that field.",
+      "dataSources": {
+        "primary": "cmp_ds_head2head"
+      },
+      "options": {
+        "count": 40
+      }
+    },
+    "cmp_viz_ent_diff": {
+      "type": "splunk.table",
+      "title": "Entitlement Differential",
+      "description": "Which entitlements each user is granted. 'User A only' rows are access B does not have -- the concrete answer to why two people with the same job see different resources.",
+      "dataSources": {
+        "primary": "cmp_ds_ent_diff"
+      },
+      "options": {
+        "count": 100,
+        "columnFormat": {
+          "Held": {
+            "textColor": "> table | seriesByName('Held') | matchValue(heldColorConfig)"
+          }
+        },
+        "heldColorConfig": [
+          { "match": "User A only", "value": "#D41F1F" },
+          { "match": "User B only", "value": "#CBA700" },
+          { "match": "both", "value": "#118832" }
+        ]
+      }
+    },
+    "cmp_viz_pol_diff": {
+      "type": "splunk.table",
+      "title": "Policy Differential",
+      "description": "The same comparison one level up, at the policy that granted the entitlements. A single policy difference usually explains a long entitlement difference.",
+      "dataSources": {
+        "primary": "cmp_ds_pol_diff"
+      },
+      "options": {
+        "count": 100,
+        "columnFormat": {
+          "Held": {
+            "textColor": "> table | seriesByName('Held') | matchValue(heldColorConfig)"
+          }
+        },
+        "heldColorConfig": [
+          { "match": "User A only", "value": "#D41F1F" },
+          { "match": "User B only", "value": "#CBA700" },
+          { "match": "both", "value": "#118832" }
+        ]
+      }
+    },
+    "cmp_viz_res_diff": {
+      "type": "splunk.table",
+      "title": "Resource Reach Differential",
+      "description": "What each user actually reached, by destination and entitlement. Assignment says what they may do; this says what they did.",
+      "dataSources": {
+        "primary": "cmp_ds_res_diff"
+      },
+      "options": {
+        "count": 100,
+        "columnFormat": {
+          "Reached": {
+            "textColor": "> table | seriesByName('Reached') | matchValue(reachColorConfig)"
+          },
+          "Port": {
+            "textColor": "> table | seriesByName('Port') | matchValue(portColorConfig)"
+          }
+        },
+        "reachColorConfig": [
+          { "match": "User A only", "value": "#D41F1F" },
+          { "match": "User B only", "value": "#CBA700" },
+          { "match": "both", "value": "#118832" }
+        ],
+        "portColorConfig": [
+          { "match": "445", "value": "#D41F1F" },
+          { "match": "3389", "value": "#D41F1F" },
+          { "match": "22", "value": "#CBA700" }
+        ]
+      }
+    }
+  },
+  "layout": {
+    "globalInputs": [
+      "input_time",
+      "input_appliance",
+      "input_user",
+      "input_entitlement",
+      "input_user_a",
+      "input_user_b"
+    ],
+    "layoutDefinitions": {
+      "layout_1": {
+        "type": "absolute",
+        "options": {
+          "width": 1440,
+          "height": 2640,
+          "display": "auto-scale"
+        },
+        "structure": [
+          { "item": "viz_header", "type": "block", "position": { "x": 0, "y": 0, "w": 1440, "h": 70 } },
+          { "item": "sec_glance", "type": "block", "position": { "x": 0, "y": 80, "w": 1440, "h": 36 } },
+          { "item": "viz_tile_users", "type": "block", "position": { "x": 0, "y": 126, "w": 230, "h": 140 } },
+          { "item": "viz_tile_appliances", "type": "block", "position": { "x": 240, "y": 126, "w": 230, "h": 140 } },
+          { "item": "viz_tile_sessions", "type": "block", "position": { "x": 480, "y": 126, "w": 230, "h": 140 } },
+          { "item": "viz_tile_denials", "type": "block", "position": { "x": 720, "y": 126, "w": 230, "h": 140 } },
+          { "item": "viz_tile_authfail", "type": "block", "position": { "x": 960, "y": 126, "w": 230, "h": 140 } },
+          { "item": "viz_tile_ssh", "type": "block", "position": { "x": 1200, "y": 126, "w": 230, "h": 140 } },
+          { "item": "sec_appliance", "type": "block", "position": { "x": 0, "y": 276, "w": 1440, "h": 56 } },
+          { "item": "viz_appliance_liveness", "type": "block", "position": { "x": 0, "y": 342, "w": 950, "h": 300 } },
+          { "item": "viz_users_per_appliance", "type": "block", "position": { "x": 960, "y": 342, "w": 470, "h": 300 } },
+          { "item": "viz_event_volume", "type": "block", "position": { "x": 0, "y": 652, "w": 710, "h": 280 } },
+          { "item": "viz_controller_messages", "type": "block", "position": { "x": 720, "y": 652, "w": 710, "h": 280 } },
+          { "item": "sec_policy", "type": "block", "position": { "x": 0, "y": 942, "w": 1440, "h": 56 } },
+          { "item": "viz_ent_used", "type": "block", "position": { "x": 0, "y": 1008, "w": 710, "h": 300 } },
+          { "item": "viz_drift", "type": "block", "position": { "x": 720, "y": 1008, "w": 710, "h": 300 } },
+          { "item": "sec_access", "type": "block", "position": { "x": 0, "y": 1318, "w": 1440, "h": 36 } },
+          { "item": "viz_traffic", "type": "block", "position": { "x": 0, "y": 1364, "w": 470, "h": 280 } },
+          { "item": "viz_ent_outcomes", "type": "block", "position": { "x": 480, "y": 1364, "w": 470, "h": 280 } },
+          { "item": "viz_top_resources", "type": "block", "position": { "x": 960, "y": 1364, "w": 470, "h": 280 } },
+          { "item": "sec_security", "type": "block", "position": { "x": 0, "y": 1654, "w": 1440, "h": 36 } },
+          { "item": "viz_auth_outcomes", "type": "block", "position": { "x": 0, "y": 1700, "w": 470, "h": 280 } },
+          { "item": "viz_auth_failures", "type": "block", "position": { "x": 480, "y": 1700, "w": 470, "h": 280 } },
+          { "item": "viz_ssh_attacks", "type": "block", "position": { "x": 960, "y": 1700, "w": 470, "h": 280 } },
+          { "item": "viz_session_churn", "type": "block", "position": { "x": 0, "y": 1990, "w": 470, "h": 280 } },
+          { "item": "viz_active_users", "type": "block", "position": { "x": 480, "y": 1990, "w": 470, "h": 280 } },
+          { "item": "viz_map", "type": "block", "position": { "x": 960, "y": 1990, "w": 470, "h": 280 } },
+          { "item": "sec_audit", "type": "block", "position": { "x": 0, "y": 2280, "w": 1440, "h": 36 } },
+          { "item": "viz_admin_activity", "type": "block", "position": { "x": 0, "y": 2326, "w": 1440, "h": 300 } }
+        ]
+      },
+      "layout_DiiilFMC": {
+        "type": "absolute",
+        "options": {
+          "width": 1440,
+          "height": 840,
+          "display": "auto-scale"
+        },
+        "structure": [
+          { "item": "ui_viz_header", "type": "block", "position": { "x": 0, "y": 0, "w": 1440, "h": 80 } },
+          { "item": "ui_viz_user_list", "type": "block", "position": { "x": 0, "y": 90, "w": 710, "h": 720 } },
+          { "item": "ui_viz_identity_summary", "type": "block", "position": { "x": 720, "y": 90, "w": 710, "h": 720 } }
+        ]
+      },
+      "layout_compare": {
+        "type": "absolute",
+        "options": {
+          "width": 1440,
+          "height": 1830,
+          "display": "auto-scale"
+        },
+        "structure": [
+          { "item": "cmp_viz_header", "type": "block", "position": { "x": 0, "y": 0, "w": 1440, "h": 80 } },
+          { "item": "cmp_sec_cohort", "type": "block", "position": { "x": 0, "y": 90, "w": 1440, "h": 56 } },
+          { "item": "cmp_viz_matrix", "type": "block", "position": { "x": 0, "y": 156, "w": 1440, "h": 360 } },
+          { "item": "cmp_viz_gap", "type": "block", "position": { "x": 0, "y": 526, "w": 710, "h": 300 } },
+          { "item": "cmp_viz_gap_chart", "type": "block", "position": { "x": 720, "y": 526, "w": 710, "h": 300 } },
+          { "item": "cmp_sec_h2h", "type": "block", "position": { "x": 0, "y": 836, "w": 1440, "h": 56 } },
+          { "item": "cmp_viz_head2head", "type": "block", "position": { "x": 0, "y": 902, "w": 710, "h": 580 } },
+          { "item": "cmp_viz_ent_diff", "type": "block", "position": { "x": 720, "y": 902, "w": 710, "h": 285 } },
+          { "item": "cmp_viz_pol_diff", "type": "block", "position": { "x": 720, "y": 1197, "w": 710, "h": 285 } },
+          { "item": "cmp_viz_res_diff", "type": "block", "position": { "x": 0, "y": 1492, "w": 1440, "h": 320 } }
+        ]
+      }
+    },
+    "tabs": {
+      "items": [
+        { "label": "Health Overview", "layoutId": "layout_1" },
+        { "label": "Investigate User", "layoutId": "layout_DiiilFMC" },
+        { "label": "Compare Users", "layoutId": "layout_compare" }
+      ]
+    }
+  }
+}
+
+]]></definition>
+  <meta type="hiddenElements"><![CDATA[
+{
+  "hideEdit": false,
+  "hideOpenInSearch": false,
+  "hideExport": false
+}
+]]></meta>
+</dashboard>

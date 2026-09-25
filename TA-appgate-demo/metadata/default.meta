@@ -1,0 +1,25 @@
+##
+## Export everything in this add-on globally.
+##
+## REQUIRED. Without export=system the search macros and field aliases are
+## private to TA-appgate-demo, so a dashboard living in the Search app cannot
+## resolve `appgate_lf` / `appgate_api` and every panel fails with
+## "Error in 'SearchParser': The search specifies a macro that cannot be found".
+##
+
+[]
+access = read : [ * ], write : [ admin, power ]
+export = system
+
+##
+## The dashboard ships inside this app and stays app-local. The [] stanza above
+## would otherwise export it to system, putting "AppGate Collective Health" in
+## every app's dashboard list. The macros it depends on are still global, so the
+## panels resolve regardless of which app the view is opened from.
+##
+
+[views]
+export = none
+
+[nav]
+export = none

@@ -1,0 +1,92 @@
+{
+  "title": "AppGate User Investigation",
+  "description": "Select a user to see their identity summary. Starting point for the per-user investigation view; panels will be added incrementally.",
+  "inputs": {
+    "input_user": {
+      "type": "input.dropdown",
+      "title": "User",
+      "options": {
+        "defaultValue": "chuck-yeager",
+        "token": "user",
+        "items": [
+          { "label": "chuck-yeager", "value": "chuck-yeager" },
+          { "label": "sally-ride", "value": "sally-ride" },
+          { "label": "benjamin-franklin", "value": "benjamin-franklin" },
+          { "label": "admin", "value": "admin" },
+          { "label": "crowdstrike-api-poller", "value": "crowdstrike-api-poller" },
+          { "label": "loadgen-scale-probe_7tae3", "value": "loadgen-scale_loadgen-scale_loadgen-scale-probe_7tae3" }
+        ]
+      }
+    },
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time Range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-24h,now"
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_identity_summary": {
+      "type": "ds.search",
+      "name": "Identity summary",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=\"$user$\" | stats values(ag_user) as \"User\", values(ag_ou) as \"Org Unit\", values(first_name) as \"First Name\", values(last_name) as \"Last Name\", values(idp) as \"Identity Provider\", values(auth_type) as \"Auth Type\", values(clearance) as \"Clearance\", values(risk_score) as \"Risk Score\", values(user_role) as \"Role\", values(home_base) as \"Home Base\", values(device_trust) as \"Device Trust\", values(geo_location) as \"Geo Location\", values(mfa_provided) as \"MFA Provided\", values(ia_training) as \"IA Training Current\", values(device_hostname) as \"Device Hostname\", values(device_os) as \"Operating System\", values(device_client_type) as \"Client Type\", values(client_version) as \"Client Version\", values(ag_country) as \"Country\", values(ag_city) as \"City\", dc(ag_client_ip) as \"Distinct Client IPs\", dc(appliance) as \"Appliances Used\", dc(entitlement) as \"Entitlements Used\", dc(session) as \"Sessions\", count as \"Total Events\", earliest(_time) as f, latest(_time) as l | eval \"First Seen\"=strftime(f, \"%F %T\"), \"Last Seen\"=strftime(l, \"%F %T\") | fields - f, l | transpose 1 | rename column as Field, \"row 1\" as Value | search Value=*"
+      }
+    }
+  },
+  "visualizations": {
+    "viz_header": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# AppGate SDP — User Investigation\nSelect a **User** above. Rows with no value are omitted — a missing Clearance or Risk Score means that user's events carry no `scripted_user_claims` block, which is normal for service accounts.",
+        "fontSize": "default"
+      }
+    },
+    "viz_identity_summary": {
+      "type": "splunk.table",
+      "title": "Identity Summary",
+      "description": "Identity, UCS risk profile, device, and activity footprint for the selected user.",
+      "dataSources": {
+        "primary": "ds_identity_summary"
+      },
+      "options": {
+        "count": 40
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1440,
+      "height": 840,
+      "display": "auto-scale"
+    },
+    "globalInputs": [ "input_user", "input_time" ],
+    "structure": [
+      {
+        "item": "viz_header",
+        "type": "block",
+        "position": { "x": 0, "y": 0, "w": 1440, "h": 80 }
+      },
+      {
+        "item": "viz_identity_summary",
+        "type": "block",
+        "position": { "x": 0, "y": 90, "w": 710, "h": 720 }
+      }
+    ]
+  }
+}

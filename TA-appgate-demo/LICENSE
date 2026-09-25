@@ -1,0 +1,50 @@
+Copyright (c) 2026 Appgate, Inc. All rights reserved.
+
+This software ("the App") comprises the AppGate ZTNA Dashboard app for Splunk,
+including its dashboards, search macros, and configuration files. The App is
+proprietary to Appgate, Inc. and is protected by copyright and other
+intellectual property laws.
+
+GRANT OF LICENSE
+
+Subject to the terms below, Appgate grants you a non-exclusive,
+non-transferable, revocable license to install and use the App on Splunk
+instances within your organization, for the purpose of viewing telemetry
+emitted by your own AppGate ZTNA deployment.
+
+RESTRICTIONS
+
+You may not:
+
+  (a) redistribute, publish, sublicense, sell, rent, or lease the App or any
+      portion of it;
+  (b) remove or alter any copyright, trademark, or other proprietary notice;
+  (c) use Appgate names, logos, or trademarks except to identify the App.
+
+Modifying the App's configuration for use within your own organization --
+including changing the `appgate_index` macro to match your index, and editing
+dashboard panels -- is permitted and expected. Distributing a modified version
+outside your organization is not.
+
+NO WARRANTY
+
+THE APP IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NONINFRINGEMENT. APPGATE DOES NOT WARRANT THAT THE APP
+WILL BE UNINTERRUPTED OR ERROR-FREE.
+
+LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL APPGATE BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR
+IN CONNECTION WITH THE APP OR THE USE OR OTHER DEALINGS IN THE APP.
+
+THIRD-PARTY COMPONENTS
+
+The App bundles no third-party code. It runs on Splunk Enterprise or Splunk
+Cloud, which are licensed separately by Splunk LLC, and reads data produced by
+AppGate ZTNA, which is licensed separately by Appgate, Inc.
+
+CONTACT
+
+For licensing enquiries, contact Appgate, Inc. at https://www.appgate.com

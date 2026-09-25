@@ -1,0 +1,588 @@
+{
+  "title": "AppGate User Investigation",
+  "description": "Per-user investigation: identity and IdP claims, UCS risk profile, granted policies, entitlement assignment vs actual use, condition evaluation, authentication outcomes, denials, and session footprint. All queries verified against live event shapes.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time Range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-24h,now"
+      }
+    },
+    "input_user": {
+      "type": "input.text",
+      "title": "User  (paste a username from Users in Window, or * for all)",
+      "options": {
+        "defaultValue": "*",
+        "token": "user"
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_user_list": {
+      "type": "ds.search",
+      "name": "Users in window",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=* | stats count as events, latest(_time) as last, dc(appliance) as appliances by ag_user | eval last=strftime(last, \"%F %T\") | sort - events | rename ag_user as User, events as Events, last as \"Last Seen\", appliances as Appliances"
+      }
+    },
+    "ds_t_auth_ok": {
+      "type": "ds.search",
+      "name": "Tile: successful authentications",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authentication_succeeded ag_user=\"$user$\" | stats count as v"
+      }
+    },
+    "ds_t_auth_fail": {
+      "type": "ds.search",
+      "name": "Tile: failed authentications",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authentication_failed ag_user=\"$user$\" | stats count as v"
+      }
+    },
+    "ds_t_ent_assigned": {
+      "type": "ds.search",
+      "name": "Tile: entitlements assigned",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded ag_user=\"$user$\" entitlement_names=* | mvexpand entitlement_names | stats dc(entitlement_names) as v"
+      }
+    },
+    "ds_t_ent_used": {
+      "type": "ds.search",
+      "name": "Tile: entitlements used",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access ag_user=\"$user$\" | stats dc(entitlement) as v"
+      }
+    },
+    "ds_t_denials": {
+      "type": "ds.search",
+      "name": "Tile: access denials",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access ag_user=\"$user$\" (ag_action=drop OR ag_action=reject) | stats count as v"
+      }
+    },
+    "ds_t_ips": {
+      "type": "ds.search",
+      "name": "Tile: distinct client IPs",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=\"$user$\" ag_client_ip=* | stats dc(ag_client_ip) as v"
+      }
+    },
+    "ds_identity_summary": {
+      "type": "ds.search",
+      "name": "Identity summary",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=\"$user$\" | stats count as \"Total Events\", earliest(_time) as f, latest(_time) as l, dc(appliance) as Appliances, dc(ag_client_ip) as \"Client IPs\", dc(entitlement) as \"Entitlements Used\", values(ag_ou) as \"Org Unit\", values(idp) as \"Identity Provider\", values(auth_type) as \"Auth Type\", values(device_hostname) as \"Device Hostname\", values(device_os) as \"Operating System\", values(client_version) as \"Client Version\", values(daemon) as Subsystems by ag_user | eval \"First Seen\"=strftime(f, \"%F %T\"), \"Last Seen\"=strftime(l, \"%F %T\") | fields - f, l | rename ag_user as User | transpose 1 | rename column as Field, \"row 1\" as Value"
+      }
+    },
+    "ds_idp_claims": {
+      "type": "ds.search",
+      "name": "IdP claims (schema-agnostic)",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authentication_succeeded ag_user=\"$user$\" | sort - _time | head 1 | fields user_claims.* | transpose 1 | rename column as Claim, \"row 1\" as Value | rex mode=sed field=Claim \"s/^user_claims\\.//\" | search Value=* | sort Claim"
+      }
+    },
+    "ds_device_claims": {
+      "type": "ds.search",
+      "name": "Device posture (schema-agnostic)",
+      "options": {
+        "query": "`appgate_lf` | search event_type=device_claims_* ag_user=\"$user$\" | sort - _time | head 1 | fields device_claims.* | transpose 1 | rename column as Attribute, \"row 1\" as Value | rex mode=sed field=Attribute \"s/^device_claims\\.//\" | search Value=* | sort Attribute"
+      }
+    },
+    "ds_risk_profile": {
+      "type": "ds.search",
+      "name": "UCS risk profile (scripted claims)",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded ag_user=\"$user$\" | sort - _time | head 1 | fields scripted_user_claims.* | transpose 1 | rename column as Attribute, \"row 1\" as Value | rex mode=sed field=Attribute \"s/^scripted_user_claims\\.//\" | search Value=* | sort Attribute"
+      }
+    },
+    "ds_policies": {
+      "type": "ds.search",
+      "name": "Policies granted to this user",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded ag_user=\"$user$\" policy_names=* | mvexpand policy_names | stats count as grants, latest(_time) as last by policy_names | eval last=strftime(last, \"%F %T\") | sort policy_names | rename policy_names as Policy, grants as Authorizations, last as \"Last Granted\""
+      }
+    },
+    "ds_ent_gap": {
+      "type": "ds.search",
+      "name": "Entitlements assigned vs used",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authorization_succeeded ag_user=\"$user$\" entitlement_names=* | mvexpand entitlement_names | stats count as assigned by entitlement_names | rename entitlement_names as ent | append [ search `appgate_lf` | search event_type=ip_access ag_user=\"$user$\" | stats count as accesses by entitlement | rename entitlement as ent ] | stats max(assigned) as assigned, max(accesses) as accesses by ent | fillnull value=0 assigned accesses | eval status=case(assigned>0 AND accesses>0, \"assigned + used\", assigned>0 AND accesses=0, \"assigned, NEVER used\", true(), \"used, not in latest grant\") | sort status, ent | rename ent as Entitlement, status as Status, accesses as Accesses | fields Entitlement, Status, Accesses"
+      }
+    },
+    "ds_conditions": {
+      "type": "ds.search",
+      "name": "Conditions this user satisfies",
+      "options": {
+        "query": "`appgate_lf` | search event_type=entitlement_token_evaluated ag_user=\"$user$\" successful_condition_names=* | mvexpand successful_condition_names | stats count as passes, latest(_time) as last by successful_condition_names | eval last=strftime(last, \"%F %T\") | sort successful_condition_names | rename successful_condition_names as Condition, passes as Passes, last as \"Last Passed\""
+      }
+    },
+    "ds_auth_outcomes": {
+      "type": "ds.search",
+      "name": "Authentication outcomes over time",
+      "options": {
+        "query": "`appgate_lf` | search event_type IN (authentication_succeeded, authentication_failed) ag_user=\"$user$\" | timechart span=1h count by event_type"
+      }
+    },
+    "ds_auth_counts": {
+      "type": "ds.search",
+      "name": "Auth and authorization event breakdown",
+      "options": {
+        "query": "`appgate_lf` | search event_type=*auth* ag_user=\"$user$\" | stats count as events by event_type | sort - events | rename event_type as Event, events as Events"
+      }
+    },
+    "ds_auth_reasons": {
+      "type": "ds.search",
+      "name": "Authentication failure reasons",
+      "options": {
+        "query": "`appgate_lf` | search event_type=authentication_failed ag_user=\"$user$\" | stats count as failures by ag_reason | sort - failures | rename ag_reason as Reason, failures as Failures"
+      }
+    },
+    "ds_recent_auth": {
+      "type": "ds.search",
+      "name": "Recent authentication, authorization and token events",
+      "options": {
+        "query": "`appgate_lf` | search (event_type=*auth* OR event_type=*token_* OR event_type=local_user_locked) ag_user=\"$user$\" | sort - _time | table _time, event_type, auth_type, ag_client_ip, ag_country, ag_region, ag_reason, exec_ms, appliance | rename event_type as Event, auth_type as Type, ag_client_ip as \"Client IP\", ag_country as Country, ag_region as Region, ag_reason as Reason, exec_ms as ms, appliance as Appliance"
+      }
+    },
+    "ds_entitlements": {
+      "type": "ds.search",
+      "name": "Entitlements exercised",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access ag_user=\"$user$\" | stats count as accesses, dc(dest_ip) as resources, max(_time) as last by entitlement | eval last=strftime(last, \"%F %T\") | sort - accesses | rename entitlement as Entitlement, accesses as Accesses, resources as Resources, last as \"Last Used\""
+      }
+    },
+    "ds_resources": {
+      "type": "ds.search",
+      "name": "Resources reached",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access ag_user=\"$user$\" | eval dest_port=coalesce(dest_port, \"--\") | stats count as accesses, values(ag_action) as actions by dest_ip, dest_port, ag_protocol | sort - accesses | rename dest_ip as Destination, dest_port as Port, ag_protocol as Protocol, accesses as Accesses, actions as Actions"
+      }
+    },
+    "ds_access_trend": {
+      "type": "ds.search",
+      "name": "Access outcomes over time",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access ag_user=\"$user$\" | timechart span=1h count by ag_action"
+      }
+    },
+    "ds_denials": {
+      "type": "ds.search",
+      "name": "Denied access attempts",
+      "options": {
+        "query": "`appgate_lf` | search event_type=ip_access ag_user=\"$user$\" (ag_action=drop OR ag_action=reject) | eval dest_port=coalesce(dest_port, \"--\") | sort - _time | table _time, ag_action, entitlement, dest_ip, dest_port, ag_protocol, ag_reason, appliance | rename ag_action as Action, entitlement as Entitlement, dest_ip as Destination, dest_port as Port, ag_protocol as Protocol, ag_reason as Reason, appliance as Appliance"
+      }
+    },
+    "ds_sessions": {
+      "type": "ds.search",
+      "name": "Session and tunnel timeline",
+      "options": {
+        "query": "`appgate_lf` | search event_type IN (session_created, session_reconnected, session_removed, tunnel_connected, tunnel_established, tunnel_closed) ag_user=\"$user$\" | sort - _time | table _time, event_type, ag_reason, session, appliance, ag_client_ip | rename event_type as Event, ag_reason as Reason, session as \"Session ID\", appliance as Appliance, ag_client_ip as \"Client IP\""
+      }
+    },
+    "ds_source_ips": {
+      "type": "ds.search",
+      "name": "Client IPs used",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=\"$user$\" ag_client_ip=* | stats count as events, earliest(_time) as f, latest(_time) as l, values(ag_country) as country, values(ag_city) as city by ag_client_ip | eval first=strftime(f, \"%F %T\"), last=strftime(l, \"%F %T\") | fields - f, l | sort - events | rename ag_client_ip as \"Client IP\", events as Events, country as Country, city as City, first as \"First Seen\", last as \"Last Seen\""
+      }
+    },
+    "ds_appliances_used": {
+      "type": "ds.search",
+      "name": "Appliances traversed",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=\"$user$\" | stats count as events by appliance | sort - events | rename appliance as Appliance, events as Events"
+      }
+    },
+    "ds_activity": {
+      "type": "ds.search",
+      "name": "Full activity timeline",
+      "options": {
+        "query": "`appgate_lf` | search ag_user=\"$user$\" | sort - _time | table _time, daemon, event_type, appliance, entitlement, dest_ip, ag_action, ag_reason, session | rename daemon as Subsystem, event_type as Event, appliance as Appliance, entitlement as Entitlement, dest_ip as Destination, ag_action as Action, ag_reason as Reason, session as \"Session ID\""
+      }
+    }
+  },
+  "visualizations": {
+    "viz_header": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# AppGate SDP — User Investigation\nPaste a username into the **User** box to scope every panel to one identity. Covers who they are, their UCS risk profile, which policies grant them what, which entitlements they hold versus actually use, how their authentications went, what was denied, and where they connected from.",
+        "fontSize": "default"
+      }
+    },
+    "sec_summary": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Summary"
+      }
+    },
+    "sec_identity": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Pick a User · Identity & Device\n**Users in Window** lists every identity in the time range — copy one into the **User** box above. The claims panels discover whatever attributes your IdP and client actually emit, so no claim schema is assumed."
+      }
+    },
+    "sec_risk": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Risk Profile, Policies & Entitlements\nFrom `scripted_user_claims` (user-claim-script output: clearance, risk score, role, home base), `policy_names` / `entitlement_names` on **authorization_succeeded**, and `successful_condition_names` on **entitlement_token_evaluated**."
+      }
+    },
+    "sec_auth": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Authentication"
+      }
+    },
+    "sec_access": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Resource Access"
+      }
+    },
+    "sec_footprint": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Session Footprint & Raw Activity"
+      }
+    },
+    "viz_t_auth_ok": {
+      "type": "splunk.singlevalue",
+      "title": "Auth Successes",
+      "dataSources": { "primary": "ds_t_auth_ok" },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "majorColor": "#118832",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_t_auth_fail": {
+      "type": "splunk.singlevalue",
+      "title": "Auth Failures",
+      "dataSources": { "primary": "ds_t_auth_fail" },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "majorColor": "> majorValue | rangeValue(failColorConfig)",
+        "failColorConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "to": 5, "value": "#CBA700" },
+          { "from": 5, "value": "#D41F1F" }
+        ],
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_t_ent_assigned": {
+      "type": "splunk.singlevalue",
+      "title": "Entitlements Assigned",
+      "dataSources": { "primary": "ds_t_ent_assigned" },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_t_ent_used": {
+      "type": "splunk.singlevalue",
+      "title": "Entitlements Used",
+      "description": "Compare against Assigned -- a large gap is over-provisioning.",
+      "dataSources": { "primary": "ds_t_ent_used" },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_t_denials": {
+      "type": "splunk.singlevalue",
+      "title": "Access Denials",
+      "dataSources": { "primary": "ds_t_denials" },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "majorColor": "> majorValue | rangeValue(denyColorConfig)",
+        "denyColorConfig": [
+          { "to": 1, "value": "#118832" },
+          { "from": 1, "value": "#D41F1F" }
+        ],
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_t_ips": {
+      "type": "splunk.singlevalue",
+      "title": "Client IPs",
+      "description": "More than one or two distinct client IPs for a single user is worth a look.",
+      "dataSources": { "primary": "ds_t_ips" },
+      "options": {
+        "majorValue": "> primary | seriesByName('v') | lastPoint()",
+        "shouldAbbreviateValues": false
+      }
+    },
+    "viz_user_list": {
+      "type": "splunk.table",
+      "title": "Users in Window",
+      "description": "Copy a username into the User box above. This panel deliberately ignores the User filter so it always shows the full list.",
+      "dataSources": { "primary": "ds_user_list" },
+      "options": { "count": 100, "dataOverlayMode": "heatmap" }
+    },
+    "viz_identity_summary": {
+      "type": "splunk.table",
+      "title": "Identity Summary",
+      "description": "Always populated -- built from event metadata rather than IdP claims.",
+      "dataSources": { "primary": "ds_identity_summary" },
+      "options": { "count": 25 }
+    },
+    "viz_idp_claims": {
+      "type": "splunk.table",
+      "title": "IdP Claims",
+      "description": "Every user_claims.* attribute on this user's most recent authentication_succeeded -- name, email, IdP, tags, and the ag.* block.",
+      "dataSources": { "primary": "ds_idp_claims" },
+      "options": { "count": 50 }
+    },
+    "viz_device_claims": {
+      "type": "splunk.table",
+      "title": "Device Posture",
+      "description": "Every device_claims.* attribute from the most recent device-claims event -- OS, client type and version, firewall state, admin rights, MAC addresses, profile, STIG flag.",
+      "dataSources": { "primary": "ds_device_claims" },
+      "options": { "count": 50 }
+    },
+    "viz_risk_profile": {
+      "type": "splunk.table",
+      "title": "UCS Risk Profile",
+      "description": "Output of the collective's user-claim scripts -- clearance, risk score, role, home base, device trust, MFA and training state. These are what the access Conditions actually gate on.",
+      "dataSources": { "primary": "ds_risk_profile" },
+      "options": { "count": 30 }
+    },
+    "viz_policies": {
+      "type": "splunk.table",
+      "title": "Policies Granted",
+      "description": "Access policies that matched this user during authorization.",
+      "dataSources": { "primary": "ds_policies" },
+      "options": { "count": 30 }
+    },
+    "viz_ent_gap": {
+      "type": "splunk.table",
+      "title": "Entitlements — Assigned vs Used",
+      "description": "Per-user least-privilege view. Rows marked 'assigned, NEVER used' are this user's over-provisioning; 'used, not in latest grant' means traffic traversed an entitlement absent from the most recent authorization.",
+      "dataSources": { "primary": "ds_ent_gap" },
+      "options": {
+        "count": 50,
+        "columnFormat": {
+          "Status": {
+            "textColor": "> table | seriesByName('Status') | matchValue(statusColorConfig)"
+          }
+        },
+        "statusColorConfig": [
+          { "match": "assigned, NEVER used", "value": "#D41F1F" },
+          { "match": "used, not in latest grant", "value": "#CBA700" },
+          { "match": "assigned + used", "value": "#118832" }
+        ]
+      }
+    },
+    "viz_conditions": {
+      "type": "splunk.table",
+      "title": "Conditions Satisfied",
+      "description": "Which policy conditions this user is currently passing -- MFA, training currency, location, quarantine state.",
+      "dataSources": { "primary": "ds_conditions" },
+      "options": { "count": 30 }
+    },
+    "viz_auth_outcomes": {
+      "type": "splunk.column",
+      "title": "Authentication Outcomes Over Time",
+      "dataSources": { "primary": "ds_auth_outcomes" },
+      "options": {
+        "stackMode": "stacked",
+        "legendDisplay": "bottom",
+        "fieldColors": {
+          "authentication_succeeded": "#118832",
+          "authentication_failed": "#D41F1F"
+        }
+      }
+    },
+    "viz_auth_counts": {
+      "type": "splunk.table",
+      "title": "Auth Event Breakdown",
+      "description": "All authentication_*, authorization_*, and admin_authorization_* event types for this user.",
+      "dataSources": { "primary": "ds_auth_counts" },
+      "options": { "count": 25, "dataOverlayMode": "heatmap" }
+    },
+    "viz_auth_reasons": {
+      "type": "splunk.table",
+      "title": "Failure Reasons",
+      "dataSources": { "primary": "ds_auth_reasons" },
+      "options": { "count": 25, "dataOverlayMode": "heatmap" }
+    },
+    "viz_recent_auth": {
+      "type": "splunk.table",
+      "title": "Recent Authentication, Authorization & Token Events",
+      "description": "Includes claims- and entitlement-token accept/evaluate, which is how a mid-session access change surfaces in the audit stream. 'ms' is controller execution time.",
+      "dataSources": { "primary": "ds_recent_auth" },
+      "options": {
+        "count": 50,
+        "columnFormat": {
+          "Event": {
+            "textColor": "> table | seriesByName('Event') | matchValue(authEventColorConfig)"
+          }
+        },
+        "authEventColorConfig": [
+          { "match": "authentication_failed", "value": "#D41F1F" },
+          { "match": "authorization_failed", "value": "#D41F1F" },
+          { "match": "local_user_locked", "value": "#D41F1F" },
+          { "match": "authentication_succeeded", "value": "#118832" },
+          { "match": "authorization_succeeded", "value": "#118832" }
+        ]
+      }
+    },
+    "viz_entitlements": {
+      "type": "splunk.table",
+      "title": "Entitlements Exercised",
+      "dataSources": { "primary": "ds_entitlements" },
+      "options": { "count": 25, "dataOverlayMode": "heatmap" }
+    },
+    "viz_resources": {
+      "type": "splunk.table",
+      "title": "Resources Reached",
+      "dataSources": { "primary": "ds_resources" },
+      "options": {
+        "count": 25,
+        "columnFormat": {
+          "Port": {
+            "textColor": "> table | seriesByName('Port') | matchValue(portColorConfig)"
+          }
+        },
+        "portColorConfig": [
+          { "match": "445", "value": "#D41F1F" },
+          { "match": "3389", "value": "#D41F1F" },
+          { "match": "22", "value": "#CBA700" }
+        ]
+      }
+    },
+    "viz_access_trend": {
+      "type": "splunk.area",
+      "title": "Access Outcomes Over Time",
+      "dataSources": { "primary": "ds_access_trend" },
+      "options": {
+        "stackMode": "stacked",
+        "legendDisplay": "bottom",
+        "fieldColors": {
+          "allow": "#118832",
+          "drop": "#CBA700",
+          "reject": "#D41F1F"
+        }
+      }
+    },
+    "viz_denials": {
+      "type": "splunk.table",
+      "title": "Denied Access Attempts",
+      "description": "What this user tried to reach and was refused. Blank means nothing was denied in the window.",
+      "dataSources": { "primary": "ds_denials" },
+      "options": {
+        "count": 50,
+        "columnFormat": {
+          "Action": {
+            "textColor": "> table | seriesByName('Action') | matchValue(actionColorConfig)"
+          }
+        },
+        "actionColorConfig": [
+          { "match": "reject", "value": "#D41F1F" },
+          { "match": "drop", "value": "#CBA700" }
+        ]
+      }
+    },
+    "viz_sessions": {
+      "type": "splunk.table",
+      "title": "Session & Tunnel Timeline",
+      "description": "session_created / _reconnected / _removed and tunnel_connected / _established / _closed, with the reason field where present.",
+      "dataSources": { "primary": "ds_sessions" },
+      "options": { "count": 40 }
+    },
+    "viz_source_ips": {
+      "type": "splunk.table",
+      "title": "Client IPs Used",
+      "dataSources": { "primary": "ds_source_ips" },
+      "options": { "count": 25 }
+    },
+    "viz_appliances_used": {
+      "type": "splunk.bar",
+      "title": "Appliances Traversed",
+      "dataSources": { "primary": "ds_appliances_used" },
+      "options": {
+        "legendDisplay": "off",
+        "yAxisTitleText": "Appliance",
+        "xAxisTitleText": "Events"
+      }
+    },
+    "viz_activity": {
+      "type": "splunk.table",
+      "title": "Full Activity Timeline",
+      "description": "Every audit event for this user across all subsystems, newest first. This is the panel to scroll during an investigation.",
+      "dataSources": { "primary": "ds_activity" },
+      "options": {
+        "count": 100,
+        "columnFormat": {
+          "Action": {
+            "textColor": "> table | seriesByName('Action') | matchValue(rawActionColorConfig)"
+          }
+        },
+        "rawActionColorConfig": [
+          { "match": "reject", "value": "#D41F1F" },
+          { "match": "drop", "value": "#CBA700" },
+          { "match": "allow", "value": "#118832" }
+        ]
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1440,
+      "height": 3100,
+      "display": "auto-scale"
+    },
+    "globalInputs": [ "input_time", "input_user" ],
+    "structure": [
+      { "item": "viz_header", "type": "block", "position": { "x": 0, "y": 0, "w": 1440, "h": 70 } },
+      { "item": "sec_summary", "type": "block", "position": { "x": 0, "y": 80, "w": 1440, "h": 36 } },
+      { "item": "viz_t_auth_ok", "type": "block", "position": { "x": 0, "y": 126, "w": 230, "h": 140 } },
+      { "item": "viz_t_auth_fail", "type": "block", "position": { "x": 240, "y": 126, "w": 230, "h": 140 } },
+      { "item": "viz_t_ent_assigned", "type": "block", "position": { "x": 480, "y": 126, "w": 230, "h": 140 } },
+      { "item": "viz_t_ent_used", "type": "block", "position": { "x": 720, "y": 126, "w": 230, "h": 140 } },
+      { "item": "viz_t_denials", "type": "block", "position": { "x": 960, "y": 126, "w": 230, "h": 140 } },
+      { "item": "viz_t_ips", "type": "block", "position": { "x": 1200, "y": 126, "w": 230, "h": 140 } },
+      { "item": "sec_identity", "type": "block", "position": { "x": 0, "y": 276, "w": 1440, "h": 56 } },
+      { "item": "viz_user_list", "type": "block", "position": { "x": 0, "y": 342, "w": 350, "h": 340 } },
+      { "item": "viz_identity_summary", "type": "block", "position": { "x": 360, "y": 342, "w": 350, "h": 340 } },
+      { "item": "viz_idp_claims", "type": "block", "position": { "x": 720, "y": 342, "w": 350, "h": 340 } },
+      { "item": "viz_device_claims", "type": "block", "position": { "x": 1080, "y": 342, "w": 350, "h": 340 } },
+      { "item": "sec_risk", "type": "block", "position": { "x": 0, "y": 692, "w": 1440, "h": 56 } },
+      { "item": "viz_risk_profile", "type": "block", "position": { "x": 0, "y": 758, "w": 350, "h": 300 } },
+      { "item": "viz_policies", "type": "block", "position": { "x": 360, "y": 758, "w": 350, "h": 300 } },
+      { "item": "viz_ent_gap", "type": "block", "position": { "x": 720, "y": 758, "w": 350, "h": 300 } },
+      { "item": "viz_conditions", "type": "block", "position": { "x": 1080, "y": 758, "w": 350, "h": 300 } },
+      { "item": "sec_auth", "type": "block", "position": { "x": 0, "y": 1078, "w": 1440, "h": 36 } },
+      { "item": "viz_auth_outcomes", "type": "block", "position": { "x": 0, "y": 1124, "w": 710, "h": 280 } },
+      { "item": "viz_auth_counts", "type": "block", "position": { "x": 720, "y": 1124, "w": 350, "h": 280 } },
+      { "item": "viz_auth_reasons", "type": "block", "position": { "x": 1080, "y": 1124, "w": 350, "h": 280 } },
+      { "item": "viz_recent_auth", "type": "block", "position": { "x": 0, "y": 1414, "w": 1440, "h": 300 } },
+      { "item": "sec_access", "type": "block", "position": { "x": 0, "y": 1724, "w": 1440, "h": 36 } },
+      { "item": "viz_entitlements", "type": "block", "position": { "x": 0, "y": 1770, "w": 470, "h": 300 } },
+      { "item": "viz_resources", "type": "block", "position": { "x": 480, "y": 1770, "w": 470, "h": 300 } },
+      { "item": "viz_access_trend", "type": "block", "position": { "x": 960, "y": 1770, "w": 470, "h": 300 } },
+      { "item": "viz_denials", "type": "block", "position": { "x": 0, "y": 2080, "w": 1440, "h": 300 } },
+      { "item": "sec_footprint", "type": "block", "position": { "x": 0, "y": 2390, "w": 1440, "h": 36 } },
+      { "item": "viz_sessions", "type": "block", "position": { "x": 0, "y": 2436, "w": 470, "h": 280 } },
+      { "item": "viz_source_ips", "type": "block", "position": { "x": 480, "y": 2436, "w": 470, "h": 280 } },
+      { "item": "viz_appliances_used", "type": "block", "position": { "x": 960, "y": 2436, "w": 470, "h": 280 } },
+      { "item": "viz_activity", "type": "block", "position": { "x": 0, "y": 2726, "w": 1440, "h": 340 } }
+    ]
+  }
+}
